@@ -1,0 +1,15 @@
+# Normalize line endings to LF in the repository.
+# Without this, editing on Windows and building on Linux (Cloudflare Pages)
+# produces whole-file diffs that hide real changes.
+* text=auto eol=lf
+
+# Binary files — never touch these.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.pdf binary
+*.woff binary
+*.woff2 binary

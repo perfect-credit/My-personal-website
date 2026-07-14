@@ -1,0 +1,126 @@
+---
+import Base from '../layouts/Base.astro';
+import { SITE } from '../config';
+---
+
+<Base
+  title="About"
+  description={`About ${SITE.name} — background, experience, and what I'm looking for.`}
+>
+  <div class="wrap about">
+    <h1>About</h1>
+
+    <!-- This is drafted from your CV summary. Read it aloud once and adjust
+         anything that doesn't sound like you — it should read as a person
+         talking, not a profile being recited. -->
+    <p>
+      I'm a data and AI engineer based in Khmelnytskyi, Ukraine. For the past
+      eight years I've worked on the systems that sit between raw data and the
+      decisions people make with it — pipelines, warehouses, and more recently
+      the LLM applications that read from them.
+    </p>
+
+    <p>
+      Most of my work lately has been production RAG systems and AI agents:
+      retrieval that returns the right context, agents that behave predictably
+      enough to ship, and the evaluation and observability needed to trust either
+      one. That's built on LangChain, LangGraph, the OpenAI Agent SDK, and vector
+      search, but the hard part is rarely the framework — it's the retrieval
+      quality and the data feeding it.
+    </p>
+
+    <p>
+      Underneath that is the part I've done longest: ETL and ELT pipelines,
+      analytical warehouses, real-time streaming, and distributed platforms in
+      Python, Spark, Databricks, Kafka, dbt, Airflow, Dagster, and AWS. I've built
+      recommendation engines, personalization, and reverse ETL across fintech,
+      healthcare, e-commerce, marketing, and iGaming. I care about the unglamorous
+      properties — data quality, governance, and observability — because they're
+      what decide whether a system survives contact with production.
+    </p>
+
+    <p>
+      <!-- TODO: Make this specific. What role do you actually want next, and
+           are you open to remote / relocation? This is the sentence that turns
+           a reader into an email. -->
+      I'm currently looking for [the kind of role you want]. If you're working on
+      something in this space, I'd like to hear about it.
+    </p>
+
+    <h2>Experience</h2>
+    <!-- TODO: Replace with your real roles. Keep it brief — the CV carries the
+         detail, and duplicating it here just creates two things to keep in sync. -->
+    <ul class="roles">
+      <li>
+        <span class="role-title">Senior Data &amp; AI Engineer</span>
+        <span class="org">Company</span>
+        <span class="dates">20XX — Present</span>
+      </li>
+      <li>
+        <span class="role-title">Previous Title</span>
+        <span class="org">Earlier Company</span>
+        <span class="dates">20XX — 20XX</span>
+      </li>
+    </ul>
+
+    <p class="cv-note">
+      <!-- Put your CV PDF in public/ and it'll be served at this path. -->
+      Full history: <a href="/cv.pdf">download CV (PDF)</a>
+    </p>
+
+    <h2>Elsewhere</h2>
+    <p>
+      Reach me at <a href={`mailto:${SITE.email}`}>{SITE.email}</a>.
+    </p>
+  </div>
+</Base>
+
+<style>
+  .about {
+    padding-top: var(--space-lg);
+  }
+
+  .about h2 {
+    margin-top: var(--space-xl);
+    margin-bottom: var(--space-md);
+  }
+
+  .roles {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: grid;
+    gap: var(--space-md);
+  }
+
+  .roles li {
+    display: grid;
+    gap: 0.1rem;
+    padding-bottom: var(--space-md);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .roles li:last-child {
+    border-bottom: none;
+  }
+
+  .role-title {
+    font-weight: 600;
+  }
+
+  .org,
+  .dates {
+    color: var(--text-muted);
+    font-size: 0.9375rem;
+  }
+
+  .dates {
+    font-family: var(--font-mono);
+    font-size: 0.8125rem;
+  }
+
+  .cv-note {
+    margin-top: var(--space-md);
+    font-size: 0.9375rem;
+  }
+</style>

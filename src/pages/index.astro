@@ -1,0 +1,223 @@
+---
+import Base from '../layouts/Base.astro';
+import { getCollection } from 'astro:content';
+import { SITE, LINKS, SKILLS } from '../config';
+
+const projects = (await getCollection('projects', ({ data }) => data.published)).sort(
+  (a, b) => a.data.order - b.data.order
+);
+---
+
+<Base title={SITE.name} description={SITE.description}>
+  <!-- Above the fold: who you are, what you do, how to reach you.
+       A recruiter decides in seconds. Don't make them scroll for this. -->
+  <section class="wrap intro">
+    <h1>{SITE.name}</h1>
+    <p class="role">{SITE.role} · {SITE.location}</p>
+    <p class="pitch">
+      I build production AI systems and the data platforms underneath them — RAG
+      pipelines, LLM agents, and the streaming and warehouse infrastructure that
+      feeds them. Eight years across fintech, healthcare, e-commerce, and iGaming,
+      mostly in Python, Spark, and AWS.
+    </p>
+    <ul class="links">
+      {
+        LINKS.map((link) => (
+          <li>
+            <a href={link.href} rel="me noopener">
+              {link.label}
+            </a>
+          </li>
+        ))
+      }
+    </ul>
+  </section>
+
+  <section class="wrap section" id="work">
+    <h2>Selected work</h2>
+    <p class="section-note">
+      Two or three projects, explained properly. Depth beats a wall of cards.
+    </p>
+
+    {
+      projects.length === 0 ? (
+        <p class="empty">
+          No projects yet. Add a markdown file in <code>src/content/projects/</code> to
+          get started.
+        </p>
+      ) : (
+        <ul class="project-list">
+          {projects.map((project) => (
+            <li class="project">
+              <h3>
+                <a href={`/projects/${project.id}/`}>{project.data.title}</a>
+              </h3>
+              <p class="summary">{project.data.summary}</p>
+              <ul class="tech">
+                {project.data.tech.map((t) => (
+                  <li>{t}</li>
+                ))}
+              </ul>
+            </li>
+          ))}
+        </ul>
+      )
+    }
+  </section>
+
+  <section class="wrap section" id="stack">
+    <h2>Stack</h2>
+    <div class="skills">
+      {
+        SKILLS.map((group) => (
+          <div class="skill-group">
+            <h3>{group.group}</h3>
+            <ul>
+              {group.items.map((item) => (
+                <li>{item}</li>
+              ))}
+            </ul>
+          </div>
+        ))
+      }
+    </div>
+  </section>
+
+  <section class="wrap section" id="contact">
+    <h2>Get in touch</h2>
+    <p>
+      The easiest thing you can do for a hiring manager is make contact trivial.
+      No form, no hoops — just an address that works.
+    </p>
+    <p>
+      <a href={`mailto:${SITE.email}`} class="email">{SITE.email}</a>
+    </p>
+  </section>
+</Base>
+
+<style>
+  .intro {
+    padding-top: var(--space-xl);
+  }
+
+  .role {
+    color: var(--text-muted);
+    margin-top: var(--space-xs);
+    font-size: 1rem;
+  }
+
+  .pitch {
+    margin-top: var(--space-md);
+    font-size: 1.125rem;
+  }
+
+  .links {
+    display: flex;
+    gap: var(--space-md);
+    list-style: none;
+    margin: var(--space-md) 0 0;
+    padding: 0;
+    flex-wrap: wrap;
+  }
+
+  .section-note {
+    color: var(--text-muted);
+    font-size: 0.9375rem;
+    margin-top: var(--space-xs);
+  }
+
+  .project-list {
+    list-style: none;
+    padding: 0;
+    margin: var(--space-lg) 0 0;
+    display: grid;
+    gap: var(--space-lg);
+  }
+
+  .project {
+    padding-bottom: var(--space-lg);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .project:last-child {
+    border-bottom: none;
+    padding-bottom: 0;
+  }
+
+  .project h3 a {
+    color: var(--text);
+    text-decoration: none;
+  }
+
+  .project h3 a:hover {
+    color: var(--accent);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+
+  .summary {
+    margin: var(--space-xs) 0 var(--space-sm);
+    color: var(--text-muted);
+  }
+
+  .tech {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-xs);
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .tech li {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    background: var(--bg-subtle);
+    border: 1px solid var(--border);
+    padding: 0.15em 0.55em;
+    border-radius: 100px;
+  }
+
+  .email {
+    font-size: 1.125rem;
+  }
+
+  .skills {
+    display: grid;
+    gap: var(--space-lg);
+    margin-top: var(--space-lg);
+  }
+
+  @media (min-width: 40rem) {
+    .skills {
+      grid-template-columns: repeat(3, 1fr);
+    }
+  }
+
+  .skill-group h3 {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    margin-bottom: var(--space-sm);
+  }
+
+  .skill-group ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+  }
+
+  .skill-group li {
+    font-size: 0.9375rem;
+    color: var(--text);
+  }
+
+  .empty {
+    color: var(--text-muted);
+  }
+</style>

@@ -1,0 +1,155 @@
+---
+import Base from '../../layouts/Base.astro';
+import { getCollection, render } from 'astro:content';
+import type { GetStaticPaths } from 'astro';
+
+export const getStaticPaths = (async () => {
+  const projects = await getCollection('projects', ({ data }) => data.published);
+  return projects.map((project) => ({
+    params: { id: project.id },
+    props: { project },
+  }));
+}) satisfies GetStaticPaths;
+
+const { project } = Astro.props;
+const { Content } = await render(project);
+const { title, summary, outcome, tech, demo, repo } = project.data;
+---
+
+<Base title={title} description={summary}>
+  <article class="wrap project">
+    <a href="/#work" class="back">← All work</a>
+
+    <h1>{title}</h1>
+    <p class="summary">{summary}</p>
+
+    <!-- The facts a reader wants before committing to the prose. -->
+    <dl class="meta">
+      <div>
+        <dt>Outcome</dt>
+        <dd>{outcome}</dd>
+      </div>
+      <div>
+        <dt>Built with</dt>
+        <dd>{tech.join(', ')}</dd>
+      </div>
+      {
+        (demo || repo) && (
+          <div>
+            <dt>Links</dt>
+            <dd class="link-row">
+              {demo && (
+                <a href={demo} rel="noopener">
+                  Live demo
+                </a>
+              )}
+              {repo && (
+                <a href={repo} rel="noopener">
+                  Source code
+                </a>
+              )}
+            </dd>
+          </div>
+        )
+      }
+    </dl>
+
+    <div class="prose">
+      <Content />
+    </div>
+  </article>
+</Base>
+
+<style>
+  .project {
+    padding-top: var(--space-lg);
+  }
+
+  .back {
+    font-size: 0.875rem;
+    color: var(--text-muted);
+    text-decoration: none;
+    display: inline-block;
+    margin-bottom: var(--space-lg);
+  }
+
+  .back:hover {
+    color: var(--accent);
+  }
+
+  .summary {
+    font-size: 1.1875rem;
+    color: var(--text-muted);
+    margin-top: var(--space-sm);
+  }
+
+  .meta {
+    margin: var(--space-lg) 0;
+    padding: var(--space-md);
+    background: var(--bg-subtle);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    display: grid;
+    gap: var(--space-sm);
+  }
+
+  .meta > div {
+    display: grid;
+    grid-template-columns: 7rem 1fr;
+    gap: var(--space-sm);
+    align-items: baseline;
+  }
+
+  @media (max-width: 32rem) {
+    .meta > div {
+      grid-template-columns: 1fr;
+      gap: 0.15rem;
+    }
+  }
+
+  dt {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    font-weight: 600;
+  }
+
+  dd {
+    margin: 0;
+    font-size: 0.9375rem;
+  }
+
+  .link-row {
+    display: flex;
+    gap: var(--space-md);
+    flex-wrap: wrap;
+  }
+
+  .prose :global(h2) {
+    margin-top: var(--space-xl);
+    margin-bottom: var(--space-sm);
+  }
+
+  .prose :global(h3) {
+    margin-top: var(--space-lg);
+    margin-bottom: var(--space-xs);
+  }
+
+  .prose :global(ul),
+  .prose :global(ol) {
+    max-width: var(--measure);
+    padding-left: 1.25rem;
+  }
+
+  .prose :global(li) {
+    margin-bottom: var(--space-xs);
+  }
+
+  .prose :global(blockquote) {
+    border-left: 3px solid var(--accent);
+    margin-left: 0;
+    padding-left: var(--space-md);
+    color: var(--text-muted);
+  }
+</style>
