@@ -6,7 +6,7 @@
 export const SITE = {
   name: 'Dmytro Paukov',
   /** Shown under your name on the home page. One line, concrete. */
-  role: 'Senior Data & AI Engineer',
+  role: 'Senior Software Engineer(Data & AI)',
   /** Default meta description. Aim for ~150 chars; search results truncate past that. */
   description:
     'Dmytro Paukov — Senior Data & AI Engineer. Production RAG systems, LLM applications, and large-scale data platforms.',
