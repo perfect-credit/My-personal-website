@@ -6,10 +6,10 @@
 export const SITE = {
   name: 'Dmytro Paukov',
   /** Shown under your name on the home page. One line, concrete. */
-  role: 'Senior Software Engineer(Data & AI)',
+  role: 'Senior Software Engineer (Data & AI)',
   /** Default meta description. Aim for ~150 chars; search results truncate past that. */
   description:
-    'Dmytro Paukov — Senior Data & AI Engineer. Production RAG systems, LLM applications, and large-scale data platforms.',
+    'Dmytro Paukov — Senior Software Engineer with 8+ years building production AI systems, full-stack applications, and the data platforms underneath them.',
   email: 'dmytro.paukov12@gmail.com',
   location: 'Khmelnytskyi, Ukraine',
 };
@@ -39,21 +39,53 @@ export const SKILLS = [
   {
     group: 'AI & LLM',
     items: [
-      'RAG systems',
+      'RAG pipelines',
+      'AI agents',
       'LangChain',
       'LangGraph',
       'OpenAI Agent SDK',
-      'Vector databases',
       'Semantic search',
-      'Foundation models',
+      'Vector databases',
+      'Human-in-the-loop',
+    ],
+  },
+  {
+    group: 'Full-stack',
+    items: [
+      'TypeScript',
+      'React',
+      'Next.js',
+      'Python',
+      'FastAPI',
+      'Node.js',
+      'REST & GraphQL',
+      'React Native',
     ],
   },
   {
     group: 'Data engineering',
-    items: ['Python', 'Spark', 'Databricks', 'Kafka', 'dbt', 'Airflow', 'Dagster'],
+    items: [
+      'ETL/ELT',
+      'Airflow',
+      'Dagster',
+      'PySpark',
+      'Databricks',
+      'Kafka',
+      'dbt',
+      'Data warehousing',
+    ],
   },
   {
-    group: 'Platform & cloud',
-    items: ['AWS', 'ETL/ELT', 'Streaming', 'Data warehousing', 'Reverse ETL', 'Observability'],
+    group: 'Cloud & infrastructure',
+    items: [
+      'AWS',
+      'Docker',
+      'Kubernetes',
+      'CI/CD',
+      'PostgreSQL',
+      'Redis',
+      'Observability',
+      'Data governance',
+    ],
   },
 ];
