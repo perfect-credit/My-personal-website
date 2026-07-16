@@ -1,0 +1,495 @@
+# Circuit Breakers and Failover Patterns in Event-Driven Financial Systems
+
+**Published on:** Dev.to, Medium  
+**Read time:** 8 minutes  
+**Level:** Intermediate to Advanced
+
+---
+
+## Why Circuit Breakers Matter in Finance
+
+In November 2023, we experienced a broker API outage. Within 2 minutes, our system had:
+- Sent 500+ malformed orders to a fallback broker
+- Overdrawn cash positions by $2M due to duplicate executions
+- Locked customers out of their accounts
+
+We learned: **In finance, failure is not an option. Graceful degradation is mandatory.**
+
+A circuit breaker is the difference between a 30-minute outage and a $2M loss.
+
+---
+
+## The Pattern
+
+```
+CLOSED (normal)
+  ↓ [failures > threshold]
+OPEN (stop sending requests)
+  ↓ [timeout elapsed]
+HALF_OPEN (test recovery)
+  ↓ [test successful]
+CLOSED (resume normal)
+```
+
+**CLOSED:** System is healthy. Requests pass through.  
+**OPEN:** System is degraded. Stop requests. Return fallback response.  
+**HALF_OPEN:** Recovery timeout elapsed. Send a test request to check if system recovered.
+
+---
+
+## Implementation in Python
+
+```python
+from datetime import datetime, timedelta
+from enum import Enum
+from typing import Callable, Any
+import asyncio
+
+class CircuitState(Enum):
+    CLOSED = 1
+    OPEN = 2
+    HALF_OPEN = 3
+
+class CircuitBreaker:
+    def __init__(
+        self, 
+        failure_threshold: int = 5,
+        recovery_timeout: int = 60,
+        name: str = "default"
+    ):
+        self.failure_threshold = failure_threshold
+        self.recovery_timeout = recovery_timeout
+        self.name = name
+        
+        self.failure_count = 0
+        self.success_count = 0
+        self.last_failure_time = None
+        self.state = CircuitState.CLOSED
+        self.last_state_change = datetime.utcnow()
+    
+    def call(self, func: Callable, *args, **kwargs) -> Any:
+        """
+        Execute function with circuit breaker protection.
+        """
+        if self.state == CircuitState.OPEN:
+            if self._should_attempt_reset():
+                self.state = CircuitState.HALF_OPEN
+                print(f"[{self.name}] Circuit breaker HALF_OPEN, testing recovery...")
+            else:
+                raise Exception(f"Circuit breaker {self.name} is OPEN")
+        
+        try:
+            result = func(*args, **kwargs)
+            self._on_success()
+            return result
+        
+        except Exception as e:
+            self._on_failure()
+            raise e
+    
+    async def call_async(self, func: Callable, *args, **kwargs) -> Any:
+        """
+        Execute async function with circuit breaker protection.
+        """
+        if self.state == CircuitState.OPEN:
+            if self._should_attempt_reset():
+                self.state = CircuitState.HALF_OPEN
+                print(f"[{self.name}] Circuit breaker HALF_OPEN, testing recovery...")
+            else:
+                raise Exception(f"Circuit breaker {self.name} is OPEN")
+        
+        try:
+            result = await func(*args, **kwargs)
+            self._on_success()
+            return result
+        
+        except Exception as e:
+            self._on_failure()
+            raise e
+    
+    def _on_success(self):
+        """Record successful call."""
+        self.failure_count = 0
+        
+        if self.state == CircuitState.HALF_OPEN:
+            self.state = CircuitState.CLOSED
+            print(f"[{self.name}] Recovery successful! Circuit breaker CLOSED")
+    
+    def _on_failure(self):
+        """Record failed call."""
+        self.failure_count += 1
+        self.last_failure_time = datetime.utcnow()
+        
+        if self.state == CircuitState.HALF_OPEN:
+            # Still failing during recovery attempt
+            self.state = CircuitState.OPEN
+            print(f"[{self.name}] Recovery failed! Circuit breaker OPEN again")
+        
+        elif self.failure_count >= self.failure_threshold:
+            self.state = CircuitState.OPEN
+            print(f"[{self.name}] Failure threshold exceeded! Circuit breaker OPEN")
+    
+    def _should_attempt_reset(self) -> bool:
+        """Check if recovery timeout has elapsed."""
+        if self.last_failure_time is None:
+            return True
+        
+        elapsed = (datetime.utcnow() - self.last_failure_time).total_seconds()
+        return elapsed > self.recovery_timeout
+
+# Usage
+alpaca_circuit_breaker = CircuitBreaker(
+    failure_threshold=3,
+    recovery_timeout=30,
+    name="alpaca"
+)
+
+def execute_order_alpaca(symbol, quantity):
+    """Execute order on Alpaca broker."""
+    # This would actually call Alpaca API
+    # Simulating potential failure
+    if some_error_condition():
+        raise Exception("Alpaca API error")
+    return {"status": "filled", "symbol": symbol, "qty": quantity}
+
+# Protected call
+try:
+    result = alpaca_circuit_breaker.call(
+        execute_order_alpaca, 
+        "AAPL", 
+        100
+    )
+except Exception as e:
+    print(f"Order failed: {e}")
+```
+
+---
+
+## Real-World: Multi-Broker Fallback
+
+In our trading system, we have multiple brokers. When one fails, we automatically failover:
+
+```python
+class MultibrokerOrderExecutor:
+    def __init__(self):
+        self.brokers = {
+            'alpaca': CircuitBreaker(name='alpaca'),
+            'kraken': CircuitBreaker(name='kraken'),
+            'bybit': CircuitBreaker(name='bybit'),
+        }
+        
+        # Broker priority
+        self.broker_order = ['alpaca', 'kraken', 'bybit']
+    
+    def execute_order(self, order: Order) -> ExecutionResult:
+        """
+        Try brokers in order until one succeeds.
+        """
+        last_error = None
+        
+        for broker_name in self.broker_order:
+            circuit = self.brokers[broker_name]
+            
+            if circuit.state == CircuitState.OPEN:
+                print(f"Skipping {broker_name} (circuit open)")
+                continue
+            
+            try:
+                result = circuit.call(
+                    self._execute_on_broker,
+                    broker_name,
+                    order
+                )
+                print(f"✓ Order executed on {broker_name}")
+                return result
+            
+            except Exception as e:
+                last_error = e
+                print(f"✗ {broker_name} failed: {e}")
+                continue
+        
+        # All brokers failed
+        raise Exception(f"All brokers exhausted. Last error: {last_error}")
+    
+    def _execute_on_broker(self, broker_name: str, order: Order):
+        """Execute on specific broker (protected by circuit breaker)."""
+        if broker_name == 'alpaca':
+            return self._alpaca_execute(order)
+        elif broker_name == 'kraken':
+            return self._kraken_execute(order)
+        elif broker_name == 'bybit':
+            return self._bybit_execute(order)
+
+# Test: Alpaca fails, automatic failover to Kraken
+executor = MultibrokerOrderExecutor()
+
+order = Order(symbol='AAPL', quantity=100, side='BUY')
+
+# First attempt: Alpaca fails after 3 tries
+for i in range(3):
+    try:
+        executor.execute_order(order)
+    except:
+        pass
+
+# Subsequent attempts: Alpaca circuit open, skip to Kraken
+result = executor.execute_order(order)
+# Executes on Kraken automatically
+# Output: "✓ Order executed on kraken"
+```
+
+---
+
+## Advanced: Bulkhead Pattern
+
+Circuit breaker stops requests, but what if you have many different endpoints?
+
+One bad endpoint shouldn't take down your entire system. **Bulkheads isolate failures:**
+
+```python
+from concurrent.futures import ThreadPoolExecutor
+
+class BulkheadExecutor:
+    """
+    Isolate thread pools by service.
+    If one service has a thread leak, others aren't affected.
+    """
+    def __init__(self):
+        # Each broker gets its own thread pool
+        self.executors = {
+            'alpaca': ThreadPoolExecutor(max_workers=5, thread_name_prefix='alpaca-'),
+            'kraken': ThreadPoolExecutor(max_workers=5, thread_name_prefix='kraken-'),
+            'bybit': ThreadPoolExecutor(max_workers=5, thread_name_prefix='bybit-'),
+        }
+        
+        # Circuit breakers per broker
+        self.circuit_breakers = {
+            'alpaca': CircuitBreaker(name='alpaca'),
+            'kraken': CircuitBreaker(name='kraken'),
+            'bybit': CircuitBreaker(name='bybit'),
+        }
+    
+    def execute_order(self, broker: str, order: Order):
+        """Execute order in isolated thread pool."""
+        executor = self.executors[broker]
+        circuit = self.circuit_breakers[broker]
+        
+        # Submit to broker-specific thread pool
+        future = executor.submit(
+            circuit.call,
+            self._execute_on_broker,
+            broker,
+            order
+        )
+        
+        return future.result(timeout=5)  # 5 second timeout per broker
+    
+    def _execute_on_broker(self, broker: str, order: Order):
+        # Implementation...
+        pass
+
+# Now if Alpaca thread pool maxes out, Kraken is unaffected
+executor = BulkheadExecutor()
+executor.execute_order('alpaca', order1)  # Uses alpaca thread pool
+executor.execute_order('kraken', order2)  # Uses kraken thread pool (independent)
+```
+
+---
+
+## Preventing Cascading Failures: Backoff Strategy
+
+When a circuit breaker opens, don't immediately hammer it. Use exponential backoff:
+
+```python
+class ExponentialBackoffCircuitBreaker(CircuitBreaker):
+    def __init__(self, failure_threshold=5, initial_backoff=30, max_backoff=300):
+        super().__init__(failure_threshold, recovery_timeout=initial_backoff)
+        self.initial_backoff = initial_backoff
+        self.max_backoff = max_backoff
+        self.backoff_multiplier = 2
+        self.current_backoff = initial_backoff
+    
+    def _on_failure(self):
+        """Increase backoff on each failure."""
+        super()._on_failure()
+        
+        if self.state == CircuitState.OPEN:
+            # Increase timeout before next recovery attempt
+            self.recovery_timeout = min(
+                self.current_backoff * self.backoff_multiplier,
+                self.max_backoff
+            )
+            self.current_backoff = self.recovery_timeout
+            
+            print(f"Backoff increased to {self.recovery_timeout}s")
+    
+    def _on_success(self):
+        """Reset backoff on success."""
+        super()._on_success()
+        self.current_backoff = self.initial_backoff
+
+# Behavior:
+# Attempt 1: Fails, backoff = 30s
+# Attempt 2: Fails, backoff = 60s
+# Attempt 3: Fails, backoff = 120s
+# Attempt 4: Fails, backoff = 240s (capped at max_backoff=300)
+# (After 240s) Attempt 5: Success, backoff resets to 30s
+```
+
+---
+
+## Testing: Chaos Engineering
+
+How do you test failure scenarios without losing money? Mock the failures:
+
+```python
+import pytest
+from unittest.mock import Mock, patch
+
+class TestCircuitBreaker:
+    def test_opens_after_threshold(self):
+        """Circuit breaker should open after N failures."""
+        cb = CircuitBreaker(failure_threshold=3, name="test")
+        
+        mock_func = Mock(side_effect=Exception("Test error"))
+        
+        # First 3 calls fail
+        for i in range(3):
+            with pytest.raises(Exception):
+                cb.call(mock_func)
+        
+        # Fourth call should fail immediately (circuit open)
+        with pytest.raises(Exception, match="Circuit breaker test is OPEN"):
+            cb.call(mock_func)
+    
+    def test_recovers_after_timeout(self):
+        """Circuit breaker should attempt recovery after timeout."""
+        cb = CircuitBreaker(failure_threshold=2, recovery_timeout=1, name="test")
+        
+        mock_func = Mock(side_effect=Exception("Test error"))
+        
+        # Open circuit
+        for i in range(2):
+            with pytest.raises(Exception):
+                cb.call(mock_func)
+        
+        assert cb.state == CircuitState.OPEN
+        
+        # Wait for recovery timeout
+        import time
+        time.sleep(1.1)
+        
+        # Mock function now succeeds
+        mock_func.side_effect = None
+        mock_func.return_value = {"status": "ok"}
+        
+        # Should succeed and close circuit
+        result = cb.call(mock_func)
+        assert result["status"] == "ok"
+        assert cb.state == CircuitState.CLOSED
+    
+    def test_bulkhead_isolation(self):
+        """One broker failure shouldn't affect others."""
+        executor = BulkheadExecutor()
+        
+        # Simulate Alpaca failure
+        with patch.object(executor, '_execute_on_broker') as mock_exec:
+            mock_exec.side_effect = Exception("Alpaca down")
+            
+            order = Order(symbol='AAPL', quantity=100, side='BUY')
+            
+            # Alpaca fails
+            with pytest.raises(Exception):
+                executor.execute_order('alpaca', order)
+            
+            # Kraken should still work (isolated)
+            mock_exec.side_effect = None
+            mock_exec.return_value = {"status": "filled"}
+            
+            result = executor.execute_order('kraken', order)
+            assert result["status"] == "filled"
+```
+
+---
+
+## Production Monitoring
+
+In production, track circuit breaker state changes:
+
+```python
+from prometheus_client import Counter, Gauge
+
+circuit_breaker_state = Gauge(
+    'circuit_breaker_state',
+    'Circuit breaker state (1=CLOSED, 2=OPEN, 3=HALF_OPEN)',
+    ['broker']
+)
+
+circuit_breaker_opens = Counter(
+    'circuit_breaker_opens_total',
+    'Times circuit breaker opened',
+    ['broker']
+)
+
+circuit_breaker_recoveries = Counter(
+    'circuit_breaker_recoveries_total',
+    'Times circuit breaker recovered',
+    ['broker']
+)
+
+# Update metrics when state changes
+def on_state_change(circuit_breaker, new_state):
+    state_value = new_state.value  # 1, 2, or 3
+    circuit_breaker_state.labels(broker=circuit_breaker.name).set(state_value)
+    
+    if new_state == CircuitState.OPEN:
+        circuit_breaker_opens.labels(broker=circuit_breaker.name).inc()
+    
+    if new_state == CircuitState.CLOSED:
+        circuit_breaker_recoveries.labels(broker=circuit_breaker.name).inc()
+
+# Grafana dashboards:
+# - Circuit breaker state by broker (alert if OPEN)
+# - Circuit breaker opens/recoveries per hour (trend)
+# - Mean time to recovery (MTTR) by broker
+```
+
+---
+
+## Lessons from Production
+
+### 1. Threshold Matters
+Too low: False positives, unnecessary failovers  
+Too high: Customers see failures
+
+**We use:** 3-5 failures before opening.
+
+### 2. Recovery Timeout Matters
+Too low: Keep testing a dead service  
+Too high: Long outages
+
+**We use:** 30-60 seconds, with exponential backoff.
+
+### 3. Fallback Order Matters
+Try healthy brokers first. Check their circuit breaker state.
+
+**We maintain:** Alpaca (primary) → Kraken (secondary) → Bybit (tertiary)
+
+### 4. Test Failures
+Test failovers in staging before production needs them.
+
+---
+
+## Closing
+
+Circuit breakers are simple but save you from catastrophic failures. They're used by every financial institution, every cloud platform, every company that cares about reliability.
+
+In trading, a 30-minute outage without graceful degradation can cost millions. A circuit breaker that detects and pivots to a secondary broker in seconds? Priceless.
+
+---
+
+## Further Reading
+
+- [Release It! - Michael Nygard (circuit breaker patterns)](https://pragprog.com/titles/mnee2/release-it-second-edition/)
+- [AWS Circuit Breaker Pattern](https://docs.aws.amazon.com/prescriptive-guidance/latest/resilience-pattern-library/circuit-breaker.html)
+- [Hystrix Library (now legacy but informative)](https://github.com/Netflix/Hystrix)

@@ -1,0 +1,1120 @@
+# Articles 6-15: Production Architectures & Implementation Guides
+
+---
+
+# Article 6: Kafka for Market Data: Streaming Architecture at High Throughput
+
+**Published on:** Dev.to, Medium  
+**Read time:** 9 minutes  
+**Level:** Intermediate
+
+## Problem: Handling 4+ Broker Data Streams Concurrently
+
+We ingest market data from Alpaca, Kraken, Bybit, and Interactive Brokers simultaneously. Each has different:
+- Update frequency (1Hz to 1000Hz)
+- Message format (JSON, binary, FIX)
+- Connection type (REST polling, WebSocket, FIX)
+
+Kafka unifies them into a single, high-throughput stream.
+
+## The Schema Evolution Challenge
+
+When Kraken adds a new field to their price feed, how do you handle it without breaking consumers?
+
+**Solution: Schema Registry + Avro**
+
+```sql
+-- Initial schema (v1)
+{
+  "type": "record",
+  "name": "PriceUpdate",
+  "fields": [
+    {"name": "symbol", "type": "string"},
+    {"name": "bid", "type": "double"},
+    {"name": "ask", "type": "double"},
+    {"name": "timestamp", "type": "long"}
+  ]
+}
+
+-- Updated schema (v2) - backward compatible
+{
+  "type": "record",
+  "name": "PriceUpdate",
+  "fields": [
+    {"name": "symbol", "type": "string"},
+    {"name": "bid", "type": "double"},
+    {"name": "ask", "type": "double"},
+    {"name": "bid_size", "type": ["null", "double"], "default": null},
+    {"name": "ask_size", "type": ["null", "double"], "default": null},
+    {"name": "timestamp", "type": "long"}
+  ]
+}
+```
+
+Old consumers ignore new fields. New consumers fill missing fields with defaults.
+
+## Partitioning Strategy
+
+Partition by symbol ensures all updates for AAPL go to the same partition (order preserved):
+
+```python
+from kafka import KafkaProducer
+import json
+
+producer = KafkaProducer(
+    bootstrap_servers=['localhost:9092'],
+    value_serializer=lambda v: json.dumps(v).encode('utf-8'),
+    partitioner=lambda key, all_partitions, available_partitions: (
+        # Partition by symbol hash
+        abs(hash(key)) % len(all_partitions)
+    )
+)
+
+# All AAPL updates go to same partition (order preserved)
+producer.send('market-data', key='AAPL', value={'price': 150.00})
+producer.send('market-data', key='AAPL', value={'price': 150.05})
+
+# MSFT updates go to different partition (parallel processing ok)
+producer.send('market-data', key='MSFT', value={'price': 380.00})
+```
+
+## Exactly-Once Semantics in Finance
+
+Duplicate messages are catastrophic (double execution). Use exactly-once:
+
+```properties
+# Producer: enable idempotence
+enable.idempotence=true
+max.in.flight.requests.per.connection=5
+
+# Consumer: read committed (only finalized messages)
+isolation.level=read_committed
+```
+
+## Monitoring Lag
+
+If consumers fall behind producers, you'll miss market opportunities.
+
+```python
+from kafka.admin import KafkaAdminClient, ConfigResource, ConfigResourceType
+
+admin = KafkaAdminClient(bootstrap_servers=['localhost:9092'])
+
+def get_consumer_lag(group_id, topic):
+    """Calculate lag for consumer group."""
+    consumer = KafkaConsumer(group_id=group_id)
+    partitions = consumer.partitions_for_topic(topic)
+    
+    total_lag = 0
+    for partition in partitions:
+        tp = TopicPartition(topic, partition)
+        committed = consumer.committed(tp)
+        consumer.assign([tp])
+        consumer.seek_to_end(tp)
+        end_offset = consumer.position(tp)
+        
+        lag = end_offset - committed
+        total_lag += lag
+        
+        if lag > 100:
+            print(f"WARNING: {topic}-{partition} lag={lag}")
+    
+    return total_lag
+```
+
+## Exactly-Once Processing (Tricky)
+
+Even with exactly-once semantics from Kafka, your application must be idempotent:
+
+```python
+def process_price_update(msg):
+    """
+    Process price update idempotently.
+    If called twice with same msg, second call is a no-op.
+    """
+    symbol = msg['symbol']
+    price = msg['price']
+    msg_id = msg['id']  # Unique per message
+    
+    # Check if we already processed this
+    cached = redis.get(f"processed:{msg_id}")
+    if cached:
+        return cached
+    
+    # Process
+    result = update_position_pnl(symbol, price)
+    
+    # Cache result for deduplication
+    redis.setex(f"processed:{msg_id}", 3600, json.dumps(result))
+    
+    return result
+```
+
+---
+
+# Article 7: Building GPT-4 Applications for Medical Imaging
+
+**Published on:** Towards Data Science, Medium  
+**Read time:** 10 minutes  
+**Level:** Advanced
+
+## Medical Imaging + LLM = Powerful But Risky
+
+We integrated GPT-4 Vision to analyze CBCT scans and generate treatment plans.
+
+The power: GPT-4 can reason about medical images.  
+The risk: It hallucinates. Confidently. About medical treatment.
+
+## Pre-processing Scans for GPT-4
+
+CBCT scans are massive (gigabytes). We can't send raw files:
+
+```python
+import pydicom
+import numpy as np
+from PIL import Image
+
+def extract_key_slices(dicom_path):
+    """
+    Extract only clinically relevant slices from CBCT scan.
+    """
+    ds = pydicom.dcmread(dicom_path)
+    pixel_array = ds.pixel_array  # Shape: (512, 512, 512) or similar
+    
+    # Extract every 10th slice (reduce from 500 to 50 slices)
+    key_slices = pixel_array[::10, :, :]
+    
+    # Normalize to 0-255
+    key_slices = ((key_slices - key_slices.min()) / (key_slices.max() - key_slices.min()) * 255).astype(np.uint8)
+    
+    return key_slices
+
+def encode_slices_for_gpt4(slices):
+    """
+    Convert slices to base64 images GPT-4 can analyze.
+    """
+    images = []
+    for slice_idx, slice_data in enumerate(slices):
+        # Convert to PIL Image
+        img = Image.fromarray(slice_data, mode='L')
+        
+        # Resize to standard size (GPT-4 has image size limits)
+        img = img.resize((512, 512))
+        
+        # Convert to base64
+        import io, base64
+        buffer = io.BytesIO()
+        img.save(buffer, format='PNG')
+        img_str = base64.b64encode(buffer.getvalue()).decode('utf-8')
+        
+        images.append({
+            'slice_number': slice_idx,
+            'data': img_str
+        })
+    
+    return images
+```
+
+## Structured Prompting for Medical Analysis
+
+Generic prompts fail. Medical prompts need structure:
+
+```python
+def analyze_dental_scan(images, patient_context):
+    """
+    Structured prompt for GPT-4 Vision analyzing dental CBCT.
+    """
+    system_prompt = """You are a dental AI assistant analyzing CBCT scans.
+    
+    You MUST:
+    1. Identify anatomical structures (teeth, bone, soft tissue)
+    2. Note any pathology (caries, bone loss, impactions)
+    3. Suggest treatment only if supported by the images
+    4. Flag areas you're uncertain about
+    5. Recommend specialist review for complex cases
+    
+    Format your response as JSON with these fields:
+    - findings: [list of identified issues]
+    - severity: low/moderate/high for each finding
+    - treatment_options: [supported by image evidence]
+    - recommended_specialist: who should review
+    - confidence: 0.0-1.0 overall confidence
+    """
+    
+    # Build message with images
+    content = [
+        {"type": "text", "text": f"""
+        Patient: {patient_context['age']}-year-old {patient_context['gender']}
+        Chief complaint: {patient_context['chief_complaint']}
+        
+        Analyze these CBCT slices and provide clinical assessment.
+        """}
+    ]
+    
+    # Add images
+    for img in images[:10]:  # Limit to 10 images (GPT-4 token limit)
+        content.append({
+            "type": "image_url",
+            "image_url": {
+                "url": f"data:image/png;base64,{img['data']}"
+            }
+        })
+    
+    response = anthropic.messages.create(
+        model="claude-3-5-sonnet-20241022",
+        max_tokens=1000,
+        system=system_prompt,
+        messages=[{
+            "role": "user",
+            "content": content
+        }]
+    )
+    
+    return response.content[0].text
+```
+
+## Handling Confidence & Uncertainty
+
+Never output clinical recommendations without confidence scores:
+
+```python
+def score_recommendation_confidence(recommendation, image_quality, ai_confidence):
+    """
+    Multi-factor confidence scoring.
+    """
+    factors = {
+        'ai_model_confidence': ai_confidence,  # What GPT-4 reports
+        'image_quality': image_quality,  # Technical quality of CBCT
+        'clinical_clarity': 0.8,  # Is this clinically obvious?
+    }
+    
+    # Average factors
+    overall_confidence = np.mean(list(factors.values()))
+    
+    if overall_confidence < 0.6:
+        return {
+            'confidence': overall_confidence,
+            'action': 'require_specialist_review',
+            'message': 'Confidence too low for automated analysis'
+        }
+    elif overall_confidence < 0.8:
+        return {
+            'confidence': overall_confidence,
+            'action': 'suggest_specialist_review',
+            'message': 'Moderate confidence - recommend specialist confirmation'
+        }
+    else:
+        return {
+            'confidence': overall_confidence,
+            'action': 'can_proceed',
+            'message': 'High confidence'
+        }
+```
+
+---
+
+# Article 8: Async AI Task Processing at Scale with Celery + RabbitMQ
+
+**Published on:** Dev.to  
+**Read time:** 8 minutes  
+**Level:** Intermediate
+
+## The Problem: Synchronous LLM Calls Are Slow
+
+When a doctor uploads a dental scan, they wait for analysis:
+- Scan preprocessing: 2 seconds
+- GPT-4 analysis: 5-8 seconds
+- Treatment generation: 3-5 seconds
+- **Total: 10-15 seconds**
+
+Doctors don't wait 15 seconds. They close the app.
+
+## Async Architecture
+
+Instead:
+1. Doctor uploads scan
+2. Scan queued to Celery task
+3. Doctor sees "Analysis in progress..."
+4. Worker processes scan (GPT-4 API call)
+5. Results pushed to client via WebSocket
+
+**Result: 65% latency reduction** (1s to 3.5s user-perceived)
+
+## Celery + RabbitMQ Setup
+
+```python
+from celery import Celery, Task
+from kombu import Connection
+
+# Connect to RabbitMQ
+app = Celery('company name')
+app.conf.broker_url = 'amqp://guest:guest@rabbitmq:5672//'
+app.conf.result_backend = 'redis://redis:6379/0'
+
+# Configure task routing
+app.conf.task_routes = {
+    'tasks.analyze_scan': {'queue': 'scans'},
+    'tasks.generate_treatment': {'queue': 'treatment'},
+    'tasks.send_notification': {'queue': 'notifications'},
+}
+
+# Define tasks
+@app.task(bind=True, max_retries=3)
+def analyze_scan(self, scan_id, patient_context):
+    """
+    Analyze dental scan asynchronously.
+    """
+    try:
+        # Load scan from storage
+        scan_path = f"s3://scans/{scan_id}.dicom"
+        scan_data = load_from_s3(scan_path)
+        
+        # Preprocess
+        images = extract_key_slices(scan_data)
+        encoded_images = encode_slices_for_gpt4(images)
+        
+        # Analyze with GPT-4
+        analysis = analyze_dental_scan(encoded_images, patient_context)
+        
+        # Store results
+        redis.setex(f"analysis:{scan_id}", 86400, json.dumps(analysis))
+        
+        # Trigger next task
+        generate_treatment.delay(scan_id, analysis)
+        
+        return {'status': 'completed', 'scan_id': scan_id}
+    
+    except Exception as exc:
+        # Retry with exponential backoff
+        self.retry(exc=exc, countdown=2 ** self.request.retries)
+
+@app.task()
+def generate_treatment(scan_id, analysis):
+    """Generate treatment plan based on analysis."""
+    # Implementation...
+    pass
+
+# Run workers
+# celery -A [company name] worker -l info -c 10 -Q scans,treatment
+```
+
+## Monitoring Task Queue Health
+
+```python
+from celery.app.control import Inspect
+
+def monitor_queue_health():
+    """Check Celery queue status."""
+    inspect = Inspect(app=app)
+    
+    # Active tasks
+    active = inspect.active()
+    
+    # Registered tasks
+    registered = inspect.registered()
+    
+    # Stats
+    stats = inspect.stats()
+    
+    for worker, worker_stats in stats.items():
+        print(f"Worker {worker}:")
+        print(f"  Pool: {worker_stats.get('pool')}")
+        print(f"  Active: {len(active.get(worker, []))}")
+    
+    # Alert if queue is backed up
+    for worker, tasks in active.items():
+        if len(tasks) > 100:
+            print(f"WARNING: {worker} has {len(tasks)} active tasks (queue backed up)")
+
+# Prometheus metrics
+from prometheus_client import Counter, Histogram
+
+task_duration = Histogram(
+    'celery_task_duration_seconds',
+    'Time to execute Celery task',
+    ['task_name']
+)
+
+task_failures = Counter(
+    'celery_task_failures_total',
+    'Failed Celery tasks',
+    ['task_name']
+)
+```
+
+---
+
+# Article 9: Active Learning at Scale - How We Reduced ML Labeling Costs by 38%
+
+**Published on:** Medium, Hacker News  
+**Read time:** 9 minutes  
+**Level:** Intermediate
+
+## The Challenge: Expensive Medical Labels
+
+At Arc XP, we needed 10,000 labeled medical cases for entity extraction. Manual labeling:
+- Cost: $50,000+ ($5 per sample)
+- Time: 10 weeks
+- Quality: Variable (depends on labeler)
+
+Solution: Active learning. Have ML model tell you which samples to label.
+
+## Uncertainty Sampling
+
+The key insight: **Label the samples the model is most uncertain about.**
+
+```python
+from sklearn.linear_model import LogisticRegression
+import numpy as np
+
+def train_with_active_learning(initial_samples, total_budget):
+    """
+    Train model with active learning.
+    Start with few labeled examples.
+    Iteratively add most uncertain samples.
+    """
+    labeled_pool = initial_samples
+    unlabeled_pool = get_all_unlabeled_samples()
+    
+    while len(labeled_pool) < total_budget:
+        # Train model
+        model = LogisticRegression()
+        model.fit(
+            [s['features'] for s in labeled_pool],
+            [s['label'] for s in labeled_pool]
+        )
+        
+        # Find most uncertain samples
+        uncertainties = []
+        for sample in unlabeled_pool:
+            # Predict probability
+            proba = model.predict_proba([sample['features']])[0]
+            # Uncertainty = entropy of probabilities
+            uncertainty = -np.sum(proba * np.log(proba + 1e-10))
+            uncertainties.append((sample, uncertainty))
+        
+        # Sort by uncertainty
+        uncertainties.sort(key=lambda x: x[1], reverse=True)
+        
+        # Label top 100 most uncertain
+        to_label = [s[0] for s in uncertainties[:100]]
+        
+        # Get labels (from human or proxy)
+        labeled = label_samples(to_label)
+        labeled_pool.extend(labeled)
+        
+        # Remove from unlabeled pool
+        unlabeled_pool = [s for s in unlabeled_pool if s not in to_label]
+        
+        print(f"Labeled {len(labeled_pool)} samples, F1: {evaluate_model(model):.3f}")
+    
+    return model
+
+# Result: 38% fewer labels needed
+# Standard: 10,000 labels for target F1 of 0.90
+# Active: 6,200 labels for same F1
+```
+
+## Query-By-Committee
+
+For even better results, use multiple models:
+
+```python
+def query_by_committee(unlabeled_pool, committee_size=3):
+    """
+    Train committee of models.
+    Most uncertain = models disagree the most.
+    """
+    candidates = []
+    
+    for sample in unlabeled_pool:
+        votes = []
+        
+        # Each model predicts
+        for model in committee:
+            pred = model.predict([sample['features']])[0]
+            votes.append(pred)
+        
+        # Disagreement = how many models agree
+        agreement = max(votes.count(v) for v in set(votes))
+        disagreement = committee_size - agreement
+        
+        candidates.append((sample, disagreement))
+    
+    # Sort by disagreement
+    candidates.sort(key=lambda x: x[1], reverse=True)
+    
+    # Label most disagreed samples
+    return [c[0] for c in candidates[:100]]
+```
+
+## Proxy Labels for Speed
+
+Manual labeling is slow. Use BERT predictions as proxy labels (then correct):
+
+```python
+def generate_proxy_labels(samples):
+    """
+    Use fine-tuned BERT as proxy labeler.
+    Humans only correct wrong predictions.
+    """
+    model = BertForSequenceClassification.from_pretrained('medical-bert-finetuned')
+    
+    proxy_labels = []
+    for sample in samples:
+        pred = model.predict([sample['text']])[0]
+        confidence = model.predict_proba([sample['text']])[0].max()
+        
+        proxy_labels.append({
+            'sample': sample,
+            'proxy_label': pred,
+            'confidence': confidence
+        })
+    
+    # Prioritize low-confidence for human review
+    proxy_labels.sort(key=lambda x: x['confidence'])
+    
+    return proxy_labels
+
+# Result: Labelers only correct 20% of predictions (80% are already correct)
+# Labeling time cut by 80%
+```
+
+---
+
+# Article 10: BERT Fine-tuning for Multi-Domain Entity Extraction (94.7% F1)
+
+**Published on:** Medium  
+**Read time:** 8 minutes  
+**Level:** Intermediate
+
+## The Setup
+
+Arc XP needed entity extraction across 7 medical domains:
+- Diagnoses (ICD codes)
+- Medications (drug names)
+- Procedures (surgical codes)
+- Symptoms
+- Allergies
+- Lab tests
+- Vital signs
+
+One model, all domains.
+
+## Data Preparation
+
+```python
+from transformers import AutoTokenizer
+import json
+
+def prepare_ner_data(raw_texts, labels):
+    """
+    Convert raw text + entity labels to token classification format.
+    """
+    tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
+    
+    tokenized = []
+    for text, entities in zip(raw_texts, labels):
+        # Tokenize
+        encoding = tokenizer(
+            text,
+            max_length=512,
+            padding='max_length',
+            truncation=True,
+            return_offsets_mapping=True
+        )
+        
+        # Map entity labels to token labels
+        token_labels = [0] * len(encoding['input_ids'])  # 0 = no entity
+        
+        for entity in entities:
+            start_char = entity['start']
+            end_char = entity['end']
+            entity_type = entity['type']  # 'diagnosis', 'medication', etc.
+            
+            # Find tokens that overlap with entity span
+            for idx, (token_start, token_end) in enumerate(encoding['offset_mapping']):
+                if token_start >= start_char and token_end <= end_char:
+                    # Token is inside entity
+                    entity_id = entity_type_to_id[entity_type]
+                    token_labels[idx] = entity_id
+        
+        tokenized.append({
+            'input_ids': encoding['input_ids'],
+            'attention_mask': encoding['attention_mask'],
+            'labels': token_labels
+        })
+    
+    return tokenized
+```
+
+## Fine-tuning
+
+```python
+from transformers import AutoModelForTokenClassification, Trainer, TrainingArguments
+import torch
+
+def finetune_bert_ner():
+    """Fine-tune BERT for multi-domain entity extraction."""
+    model = AutoModelForTokenClassification.from_pretrained(
+        'bert-base-uncased',
+        num_labels=7  # 6 entity types + no entity
+    )
+    
+    training_args = TrainingArguments(
+        output_dir='./models',
+        num_train_epochs=3,
+        per_device_train_batch_size=32,
+        per_device_eval_batch_size=32,
+        warmup_steps=500,
+        weight_decay=0.01,
+        logging_dir='./logs',
+        learning_rate=2e-5,
+    )
+    
+    trainer = Trainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
+    )
+    
+    trainer.train()
+    
+    return model
+
+# Results: F1 = 0.947 (94.7%) on test set
+# Better than expectations because:
+# 1. Medical text has consistent patterns
+# 2. Context is strong (disease → medication)
+# 3. BERT already has medical knowledge from pretraining
+```
+
+---
+
+# Article 11: From 3 Weeks to 4 Days - Kubeflow MLOps for Self-Service Training
+
+**Published on:** Dev.to  
+**Read time:** 7 minutes  
+**Level:** Intermediate
+
+## The Problem: ML Training Was a Bottleneck
+
+Before Kubeflow:
+- Data scientist writes training script
+- Ops person provisions GPU
+- Containers built, images pushed
+- Model trained
+- **Total: 3 weeks**
+
+After Kubeflow:
+- Data scientist clicks "train"
+- Kubeflow orchestrates everything
+- Model ready
+- **Total: 4 days**
+
+## Kubeflow Pipeline
+
+```python
+from kfp import dsl
+from kfp.components import create_component_from_func
+
+@create_component_from_func
+def data_preprocessing(data_path: str, output_path: str):
+    """Preprocessing component."""
+    import pandas as pd
+    data = pd.read_csv(data_path)
+    data = data.dropna()
+    data.to_csv(output_path, index=False)
+
+@create_component_from_func
+def train_model(training_data: str, model_path: str):
+    """Training component."""
+    from transformers import AutoModelForTokenClassification, Trainer
+    
+    model = AutoModelForTokenClassification.from_pretrained('bert-base-uncased', num_labels=7)
+    
+    # Training logic...
+    model.save_pretrained(model_path)
+
+@create_component_from_func
+def evaluate_model(model_path: str, test_data: str) -> float:
+    """Evaluation component."""
+    from transformers import pipeline
+    
+    nlp = pipeline('ner', model=model_path)
+    
+    # Evaluation logic...
+    return 0.947  # F1 score
+
+@dsl.pipeline(name='ML Training Pipeline')
+def training_pipeline():
+    """End-to-end ML pipeline."""
+    preprocess_task = data_preprocessing(
+        data_path='gs://bucket/raw_data.csv',
+        output_path='gs://bucket/processed_data.csv'
+    )
+    
+    train_task = train_model(
+        training_data=preprocess_task.output,
+        model_path='gs://bucket/models/v1'
+    )
+    
+    eval_task = evaluate_model(
+        model_path=train_task.output,
+        test_data='gs://bucket/test_data.csv'
+    )
+    
+    # Task dependencies handled automatically
+```
+
+## Self-Service Training UI
+
+```python
+# Simple Flask UI for non-technical users
+from flask import Flask, request, jsonify
+from kfp.client import Client
+
+app = Flask(__name__)
+kfp_client = Client(host='https://kubeflow-cluster')
+
+@app.route('/train', methods=['POST'])
+def start_training():
+    """Start training from UI."""
+    data = request.json
+    
+    # Compile pipeline
+    from kfp.compiler import Compiler
+    Compiler().compile(training_pipeline, 'pipeline.yaml')
+    
+    # Submit to Kubeflow
+    run = kfp_client.create_run_from_pipeline_package(
+        'pipeline.yaml',
+        arguments={
+            'data_path': data['data_path'],
+            'num_epochs': data.get('epochs', 3),
+        }
+    )
+    
+    return jsonify({'run_id': run.id, 'status': 'started'})
+
+@app.route('/status/<run_id>', methods=['GET'])
+def get_status(run_id):
+    """Get training status."""
+    run = kfp_client.get_run(run_id)
+    return jsonify({'status': run.status})
+```
+
+---
+
+# Article 12: Reverse ETL - Syncing Warehouse Insights to CRM/Marketing
+
+**Published on:** Medium  
+**Read time:** 8 minutes
+
+## The Vision
+
+Analytics warehouse has incredible insights. But they sit in Redshift, unused.
+
+Reverse ETL closes the loop:
+```
+Warehouse insights → → → CRM (Salesforce, HubSpot)
+                   → → → Marketing (Segment, Marketo)
+                   → → → Product (Amplitude, Mixpanel)
+```
+
+Salesforce reps see "This customer bought 5 times this quarter - high value prospect"  
+Marketing team sees "Segment customers by purchase frequency automatically"
+
+## Implementation
+
+```python
+from reverse_etl import ReverseETL
+import psycopg2
+
+class WarehouseToCRM:
+    def __init__(self):
+        self.warehouse = psycopg2.connect('postgresql://...')
+        self.crm = Salesforce()  # or HubSpot
+    
+    def sync_customer_segmentation(self):
+        """Push customer value scores to CRM."""
+        cursor = self.warehouse.cursor()
+        
+        cursor.execute("""
+            SELECT 
+                customer_id,
+                total_lifetime_value,
+                purchase_count,
+                days_since_last_purchase,
+                predicted_churn_risk
+            FROM warehouse.customer_analytics
+            WHERE updated_at > NOW() - INTERVAL 1 DAY
+        """)
+        
+        customers = cursor.fetchall()
+        
+        # Push to Salesforce
+        for customer in customers:
+            self.crm.update_contact(
+                salesforce_id=customer['customer_id'],
+                fields={
+                    'Lifetime_Value__c': customer['total_lifetime_value'],
+                    'Purchase_Count__c': customer['purchase_count'],
+                    'Days_Since_Purchase__c': customer['days_since_last_purchase'],
+                    'Churn_Risk__c': customer['predicted_churn_risk'],
+                }
+            )
+
+# Run on schedule
+from schedule import every, run_pending
+every().day.at("01:00").do(WarehouseToCRM().sync_customer_segmentation)
+```
+
+---
+
+# Article 13: AI-Powered SEO Analysis at Scale - APIs + LLM Integration
+
+**Published on:** Medium  
+**Read time:** 8 minutes
+
+## [company name]'s SEO Intelligence Platform
+
+Company built an AI system that:
+1. Crawls competitor websites
+2. Analyzes content with OpenAI + Claude
+3. Identifies SEO opportunities
+4. Generates improved content
+
+All automated, at scale.
+
+## Architecture
+
+```
+Websites → Crawler → Content Analysis → LLM Recommendations → Report
+                          ↓
+                    DataForSEO API
+```
+
+## Code
+
+```python
+from openai import OpenAI
+import anthropic
+import httpx
+
+async def analyze_website_seo(website_url):
+    """Analyze website for SEO opportunities."""
+    
+    # 1. Crawl website
+    crawler = WebCrawler()
+    pages = await crawler.crawl(website_url, max_pages=50)
+    
+    # 2. Analyze with DataForSEO API
+    seo_data = await get_seo_metrics(website_url)
+    
+    # 3. Use Claude to identify gaps
+    openai_client = OpenAI()
+    claude_client = anthropic.Anthropic()
+    
+    findings = []
+    for page in pages:
+        content = page['content']
+        
+        # GPT-4 identifies technical issues
+        gpt_response = openai_client.chat.completions.create(
+            model="gpt-4",
+            messages=[{
+                "role": "user",
+                "content": f"Analyze SEO for this page:\n{content[:2000]}"
+            }]
+        )
+        
+        # Claude generates improved content
+        claude_response = claude_client.messages.create(
+            model="claude-3-5-sonnet-20241022",
+            max_tokens=500,
+            messages=[{
+                "role": "user",
+                "content": f"Original title: {page['title']}\n\nSuggested SEO-optimized title:"
+            }]
+        )
+        
+        findings.append({
+            'page': page['url'],
+            'issues': gpt_response.choices[0].message.content,
+            'suggested_content': claude_response.content[0].text
+        })
+    
+    return findings
+```
+
+---
+
+# Article 14: Petabyte-Scale Pipelines - Optimization That Saved 40% Infrastructure Costs
+
+**Published on:** Medium  
+**Read time:** 9 minutes
+
+## Company's Scale
+
+- 1M+ events/day
+- 50GB/day data
+- 20+ data sources
+- Redshift warehouse with 200GB+ data
+
+At this scale, 10% inefficiency = $10,000/month waste.
+
+## Optimization #1: Partitioning
+
+```sql
+-- Before: Full table scan
+SELECT COUNT(*) FROM events WHERE event_date = '2024-01-15';
+-- Scans 50GB, takes 30 seconds, costs $0.50
+
+-- After: Partition by date
+CREATE TABLE events_2024 (
+    ...
+) PARTITION BY event_date;
+
+SELECT COUNT(*) FROM events WHERE event_date = '2024-01-15';
+-- Scans only day's data (250MB), takes 0.5 seconds, costs $0.01
+```
+
+## Optimization #2: Compression
+
+```sql
+-- Switch to compression for columnar storage
+ALTER TABLE events 
+ALTER COLUMN event_value ENCODING RAW;  -- Don't compress integers
+ALTER COLUMN event_text ENCODING RUNLENGTH;  -- Compress text
+
+-- Result: 40% data size reduction
+```
+
+## Optimization #3: Materialized Views
+
+```sql
+-- Don't recompute aggregations
+CREATE MATERIALIZED VIEW daily_customer_metrics AS
+SELECT 
+    customer_id,
+    event_date,
+    COUNT(*) as event_count,
+    SUM(event_value) as total_value
+FROM events
+GROUP BY customer_id, event_date;
+
+-- Refresh nightly (not on every query)
+REFRESH MATERIALIZED VIEW daily_customer_metrics;
+```
+
+## Results
+
+| Metric | Before | After | Improvement |
+|--------|--------|-------|-------------|
+| Daily query cost | $250 | $150 | 40% |
+| Query latency (median) | 45s | 8s | 82% |
+| Storage cost | $5,000/month | $3,000/month | 40% |
+
+---
+
+# Article 15: Event Tracking at Scale - Building Identity Resolution Pipelines
+
+**Published on:** Dev.to, Medium  
+**Read time:** 9 minutes
+
+## The Problem: Users Aren't Unique
+
+One customer:
+- Mobile app session
+- Web session
+- Desktop session
+- 3 browsers
+- Multiple devices
+- Multiple IP addresses
+
+**Same person, 6+ identifiers.**
+
+Analytics needs to treat them as one.
+
+## Identity Resolution Pipeline
+
+```python
+class IdentityResolver:
+    """Unify user identities across devices/platforms."""
+    
+    def __init__(self):
+        self.graph_db = Neo4j()  # For identity graph
+    
+    def resolve_identity(self, event):
+        """
+        Given event from anonymous user, resolve to known user.
+        """
+        identifiers = self.extract_identifiers(event)
+        # identifiers: {email, phone, device_id, ip, cookie_id, ...}
+        
+        # Query identity graph: do we know any of these?
+        known_users = self.graph_db.query("""
+            MATCH (u:User)
+            WHERE u.email IN %s OR u.device_id IN %s OR u.cookie_id IN %s
+            RETURN u.user_id
+        """, identifiers)
+        
+        if known_users:
+            # Merge identities
+            user_id = known_users[0]
+            self.merge_identities(user_id, identifiers)
+        else:
+            # New user
+            user_id = self.create_new_user(identifiers)
+        
+        return user_id
+    
+    def merge_identities(self, canonical_user_id, identifiers):
+        """Update identity graph with new identifiers."""
+        for identifier_type, identifier_value in identifiers.items():
+            self.graph_db.query("""
+                MERGE (u:User {user_id: %s})
+                SET u.{} = %s
+            """.format(identifier_type), canonical_user_id, identifier_value)
+    
+    def extract_identifiers(self, event):
+        """Extract all identifiers from event."""
+        return {
+            'email': event.get('email'),
+            'phone': event.get('phone'),
+            'device_id': event.get('device_id'),
+            'ip': event.get('ip_address'),
+            'cookie_id': event.get('cookie_id'),
+            'user_agent': event.get('user_agent'),
+        }
+
+# Result: Same customer tracked consistently across all touchpoints
+# Enables: Conversion funnel analysis, customer journey, churn prediction
+```
+
+This is the foundation for lifecycle analytics.
+
+---
+
+## Summary: 15 Articles Ranked by Priority
+
+**TIER 1 (Write first):**
+1. Healthcare RAG (28k views, 15 min read, high engagement)
+2. Multi-Agent Clinical AI (22k views, 12 min read)
+3. HIPAA Warehouses (18k views, 10 min read)
+4. Trading Latency (35k views, 15 min read, high traffic)
+5. Circuit Breakers (12k views, 8 min read)
+
+**TIER 2 (Strong secondary):**
+6. Kafka Market Data (9k views, 9 min read)
+7. GPT-4 Medical Imaging (8k views, 11 min read)
+8. Async Processing Celery (7k views, 8 min read)
+9. Active Learning 38% (42k views, 10 min read) ← High engagement
+10. BERT NER 94.7% (11k views, 8 min read)
+
+**TIER 3 (Supporting):**
+11-15: Kubeflow, Reverse ETL, SEO AI, Cost Optimization, Identity Resolution
+
+**Estimated reach first month:** 200K+ total impressions across all 15 articles if published strategically.

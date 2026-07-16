@@ -27,6 +27,7 @@ export const LINKS = [
 
 export const NAV = [
   { label: 'Work', href: '/#work' },
+  { label: 'Library', href: '/library' },
   { label: 'About', href: '/about' },
 ];
 

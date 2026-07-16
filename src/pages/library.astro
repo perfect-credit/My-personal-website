@@ -1,0 +1,169 @@
+---
+import fs from 'node:fs';
+import path from 'node:path';
+import Base from '../layouts/Base.astro';
+import { SITE } from '../config';
+
+/**
+ * Reads the folders at BUILD time and links to whatever is in them.
+ *
+ * The point of doing it this way: you never touch this file again. Drop a .txt,
+ * .svg, or .png into public/library/{articles,architecture}/ and it shows up.
+ * No frontmatter, no markdown, no per-file code. The link opens the real file.
+ *
+ * Because these live in public/, Astro copies them through untouched and the
+ * browser renders them directly — .txt as plain text, .svg and .png as images.
+ */
+function listFiles(folder: string, extensions: string[]) {
+  const dir = path.join(process.cwd(), 'public', 'library', folder);
+  if (!fs.existsSync(dir)) return [];
+
+  return fs
+    .readdirSync(dir)
+    .filter((file) => extensions.includes(path.extname(file).toLowerCase()))
+    .sort()
+    .map((file) => ({
+      href: `/library/${folder}/${file}`,
+      // Filename drives the label, so renaming the file renames the link.
+      label: prettify(file),
+      ext: path.extname(file).replace('.', '').toUpperCase(),
+      sizeKb: Math.max(1, Math.round(fs.statSync(path.join(dir, file)).size / 1024)),
+    }));
+}
+
+/** article_01_rag_healthcare.txt -> "Rag healthcare" */
+function prettify(file: string) {
+  const base = path
+    .basename(file, path.extname(file))
+    .replace(/^(article|diagram)[_-]?\d*[_-]?/i, '')
+    .replace(/[_-]+/g, ' ')
+    .trim();
+  return base.charAt(0).toUpperCase() + base.slice(1);
+}
+
+const articles = listFiles('articles', ['.txt', '.md', '.pdf']);
+const diagrams = listFiles('architecture', ['.svg', '.png', '.jpg', '.jpeg']);
+const hasAnything = articles.length > 0 || diagrams.length > 0;
+---
+
+<Base
+  title="Library"
+  description={`Articles and system architecture diagrams by ${SITE.name}.`}
+>
+  <div class="wrap page">
+    <h1>Library</h1>
+    <p class="lede">Articles and architecture diagrams. Each link opens the file.</p>
+
+    {
+      !hasAnything && (
+        <p class="empty">
+          Nothing here yet. Drop files into <code>public/library/articles/</code> or{' '}
+          <code>public/library/architecture/</code> and they'll appear here
+          automatically.
+        </p>
+      )
+    }
+
+    {
+      articles.length > 0 && (
+        <section class="group">
+          <h2>Articles</h2>
+          <ul class="files">
+            {articles.map((f) => (
+              <li>
+                <a href={f.href}>
+                  <span class="name">{f.label}</span>
+                  <span class="tag">
+                    {f.ext} · {f.sizeKb} KB
+                  </span>
+                </a>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )
+    }
+
+    {
+      diagrams.length > 0 && (
+        <section class="group">
+          <h2>Architecture</h2>
+          <ul class="files">
+            {diagrams.map((f) => (
+              <li>
+                <a href={f.href}>
+                  <span class="name">{f.label}</span>
+                  <span class="tag">
+                    {f.ext} · {f.sizeKb} KB
+                  </span>
+                </a>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )
+    }
+  </div>
+</Base>
+
+<style>
+  .page {
+    padding-top: var(--space-lg);
+  }
+
+  .lede {
+    color: var(--text-muted);
+    margin-top: var(--space-sm);
+  }
+
+  .group {
+    margin-top: var(--space-xl);
+  }
+
+  .group h2 {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    margin-bottom: var(--space-sm);
+  }
+
+  .files {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+  }
+
+  .files li + li {
+    border-top: 1px solid var(--border);
+  }
+
+  .files a {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-md);
+    padding: var(--space-sm) 0;
+    text-decoration: none;
+    color: var(--text);
+  }
+
+  .files a:hover .name {
+    color: var(--accent);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+
+  .tag {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    white-space: nowrap;
+  }
+
+  .empty {
+    color: var(--text-muted);
+    margin-top: var(--space-lg);
+  }
+</style>
